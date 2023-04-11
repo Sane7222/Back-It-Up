@@ -5,87 +5,128 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 
 #define SIZE 1024
 
-typedef struct node {
-    char *file;
-    struct stat orig, back;
+typedef struct dataNode {
+    char *file, *path;
+    struct stat originalStats, backupStats;
 } info;
 
-void log_result(char *op, char *item) {
-    printf("%s | %s | %s\n", op, item, strerror(errno));
-    errno = 0;
+typedef struct tNode {
+    pthread_t thread;
+    struct tNode *next;
+} thr;
+
+thr *head = NULL;
+thr *tail = NULL;
+
+void freeData(info *data) {
+    free(data->file);
+    free(data);
 }
 
-void copyFile(void *arg) {
+void *copyFile(void *arg) {
     info *data = (info *) arg;
 
-    int iFd = open(data->file, O_RDONLY);
-    log_result("open", data->file);
-    if (iFd == -1) { free(data); return; }
+    char filePath[SIZE], backupPath[SIZE];
+    sprintf(filePath, "%s/%s", data->path, data->file);
+    sprintf(backupPath, "%s/.backup/%s.bak", data->path, data->file);
 
-    char path[SIZE];
-    sprintf(path, ".backup/%s.bak", data->file);
+    if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->file);
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->file);
+    else {
+        printf("%s is up to date\n", data->file);
+        freeData(data);
+        pthread_exit(NULL);
+    }
 
-    int n = stat(path, &data->back);
-    log_result("stat", path);
+    int iFd = open(filePath, O_RDONLY);
+    if (iFd == -1) {
+        freeData(data);
+        pthread_exit(NULL);
+    }
 
-    if (n == -1) printf("Creating Backup of %s\n", data->file);
-    else if (data->orig.st_mtime > data->back.st_mtime) printf("WARNING: Overwriting %s\n", data->file);
-    else printf("%s is up to date\n", data->file);
-
-    int oFd = open(path, O_WRONLY | O_CREAT, 0644);
-    log_result("open", path);
-    if (oFd == -1) { close(iFd); free(data); return; }
+    int oFd = open(backupPath, O_WRONLY | O_CREAT, 0644);
+    if (oFd == -1) {
+        close(iFd);
+        freeData(data);
+        pthread_exit(NULL);
+    }
 
     int rd;
     char buffer[SIZE];
     while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd);
 
     close(iFd);
-    log_result("close", data->file);
     close(oFd);
-    log_result("close", path);
-    free(data);
+    freeData(data);
+    pthread_exit(NULL);
+}
+
+void newThread(info *data) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) {
+        freeData(data);
+        return;
+    }
+
+    thr *node = (thr *) malloc(sizeof(thr));
+    node->thread = thread;
+    node->next = NULL;
+
+    if (head == NULL) head = node;
+    if (tail != NULL) tail->next = node;
+    tail = node;
+}
+
+void joinThreads() {
+    thr *temp = head;
+    while (head != NULL) {
+        head = head->next;
+        pthread_join(temp->thread, NULL);
+        free(temp);
+        temp = head;
+    }
 }
 
 void enterDir(char *directory) {
     DIR *dir = opendir(directory);
-    log_result("opendir", directory);
     if (dir == NULL) return;
 
-    int m = chdir(directory);
-    log_result("chdir", directory);
-    if (m == -1) return;
-
-    mkdir(".backup", 0755);
-    log_result("mkdir", ".backup");
+    char pathToBackup[SIZE];
+    sprintf(pathToBackup, "%s/.backup/", directory);
+    mkdir(pathToBackup, 0755);
 
     struct dirent *file;
-    while ((file = readdir(dir)) != NULL){
+    while ((file = readdir(dir)) != NULL) {
         if (file->d_name[0] == '.') continue;
 
+        struct stat status;
+        char pathToFile[SIZE];
+        sprintf(pathToFile, "%s/%s", directory, file->d_name);
+        if (stat(pathToFile, &status) == -1) continue;
+
         info *data = (info *) malloc(sizeof(info));
-        data->file = file->d_name;
+        data->file = strdup(file->d_name);
+        data->originalStats = status;
+        data->path = directory;
 
-        int n = stat(file->d_name, &data->orig);
-        log_result("stat", file->d_name);
-        if (n == -1) { free(data); continue; }
-
-        if (S_ISDIR(data->orig.st_mode)) { enterDir(file->d_name); free(data); }
-        else if (S_ISREG(data->orig.st_mode)) copyFile((void *) data);
-        else free(data);
+        if (S_ISDIR(data->originalStats.st_mode)) {
+            freeData(data);
+            enterDir(pathToFile);
+        }
+        else if (S_ISREG(data->originalStats.st_mode)) newThread(data);
+        else freeData(data);
     }
 
-    chdir("..");
-    log_result("chdir", "..");
     closedir(dir);
-    log_result("closedir", directory);
 }
 
 void main() {
     enterDir(".");
+    joinThreads();
     exit(0);
 }
