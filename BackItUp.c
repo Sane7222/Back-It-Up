@@ -40,20 +40,33 @@ void *copyFile(void *arg) {
     sprintf(filePath, "%s/%s", data->path, data->file);
     sprintf(backupPath, "%s/.backup/%s.bak", data->path, data->file);
 
-    // RESTORE: For the above section I recommend switching the paths
-    // So we read from the .backup/file and write to the original file
+    if (RESTORE_MODE) {
 
-    if (stat(backupPath, &data->backupStats) == -1) printf("[thread %d] Backing up %s\n", data->thread_num, data->file);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s\n", data->thread_num, data->file); // Determine course of action and output message
-    else {
-        printf("[thread %d] %s is up to date\n", data->thread_num, data->file);
-        freeData(data);
-        pthread_exit(NULL);
+        if (stat(backupPath, &data->backupStats) == -1 || data->originalStats.st_mtime > data->backupStats.st_mtime) {
+            printf("[thread %d] %s is up to date\n", data->thread_num, data->file);
+            freeData(data);
+            pthread_exit(NULL);
+        }
+
+        printf("[thread %d] Restoring %s\n", data->thread_num, data->file);
+
+        // swap filePath and backupPath,
+        // filePath now .bak
+        // backup now original
+        char temp[SIZE];
+        strcpy(temp, filePath);
+        strcpy(filePath, backupPath);
+        strcpy(backupPath, temp);
+
+    } else {
+        if (stat(backupPath, &data->backupStats) == -1) printf("[thread %d] Backing up %s\n", data->thread_num, data->file);
+        else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s\n", data->thread_num, data->file); // Determine course of action and output message
+        else {
+            printf("[thread %d] %s is up to date\n", data->thread_num, data->file);
+            freeData(data);
+            pthread_exit(NULL);
+        }
     }
-
-    // RESTORE: For the above section I recommend a simple if - else
-    // If (Restore) Compare appropriate values to determine if the original file must be overwritten by the .backup/file
-    // Else Do what is already present
 
     int iFd = open(filePath, O_RDONLY);
     if (iFd == -1) {
@@ -76,7 +89,11 @@ void *copyFile(void *arg) {
         num_bytes_copied += rd;
     }
 
-    printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->file, data->file);
+    if (RESTORE_MODE) {
+        printf("[thread %d] Copied %d bytes from %s.bak to %s\n", data->thread_num, num_bytes_copied, data->file, data->file);
+    } else {
+        printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->file, data->file);
+    }
 
     close(iFd);
     close(oFd);
@@ -148,7 +165,6 @@ void main(int argc, char *argv[]) {
 
     if (argc > 1) {
         if (!strcmp(argv[1], "-r")) RESTORE_MODE = 1;
-        exit(0);
     }
 
     enterDir(".");
