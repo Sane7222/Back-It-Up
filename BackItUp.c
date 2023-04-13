@@ -11,10 +11,9 @@
 #define SIZE 1024
 
 typedef struct dataNode {
-    char *file;
-    char *path;
-    struct stat originalStats;
-    struct stat backupStats;
+    char *file, *path;
+    struct stat originalStats, backupStats;
+    int thread_num;
 } info;
 
 typedef struct tNode {
@@ -26,6 +25,7 @@ thr *head = NULL;
 thr *tail = NULL;
 
 int RESTORE_MODE = 0;
+int TOTAL_THREADS = 0;
 
 void freeData(info *data) {
     free(data->file);
@@ -43,10 +43,10 @@ void *copyFile(void *arg) {
     // RESTORE: For the above section I recommend switching the paths
     // So we read from the .backup/file and write to the original file
 
-    if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->file);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->file); // Determine course of action and output message
+    if (stat(backupPath, &data->backupStats) == -1) printf("[thread %d] Backing up %s\n", data->thread_num, data->file);
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s\n", data->thread_num, data->file); // Determine course of action and output message
     else {
-        printf("%s is up to date\n", data->file);
+        printf("[thread %d] %s is up to date\n", data->thread_num, data->file);
         freeData(data);
         pthread_exit(NULL);
     }
@@ -76,7 +76,7 @@ void *copyFile(void *arg) {
         num_bytes_copied += rd;
     }
 
-    printf("Copied %d bytes from %s to %s.bak\n", num_bytes_copied, data->file, data->file);
+    printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->file, data->file);
 
     close(iFd);
     close(oFd);
@@ -86,6 +86,7 @@ void *copyFile(void *arg) {
 
 void newThread(info *data) {
     pthread_t thread;
+    data->thread_num = ++TOTAL_THREADS;
     if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) { // Create new thread
         freeData(data);
         return;
