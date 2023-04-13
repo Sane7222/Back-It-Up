@@ -11,8 +11,10 @@
 #define SIZE 1024
 
 typedef struct dataNode {
-    char *file, *path;
-    struct stat originalStats, backupStats;
+    char *file;
+    char *path;
+    struct stat originalStats;
+    struct stat backupStats;
 } info;
 
 typedef struct tNode {
@@ -25,11 +27,13 @@ thr *tail = NULL;
 
 void freeData(info *data) {
     free(data->file);
+    free(data->path);
     free(data);
 }
 
 void *copyFile(void *arg) {
     info *data = (info *) arg;
+    printf("in thread: <%s>; <%s>\n", data->path, data->file);
 
     char filePath[SIZE], backupPath[SIZE];
     sprintf(filePath, "%s/%s", data->path, data->file);
@@ -68,6 +72,7 @@ void *copyFile(void *arg) {
 
 void newThread(info *data) {
     pthread_t thread;
+    printf("starting thread: <%s>; <%s>\n", data->path, data->file);
     if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) {
         freeData(data);
         return;
@@ -112,7 +117,7 @@ void enterDir(char *directory) {
         info *data = (info *) malloc(sizeof(info));
         data->file = strdup(file->d_name);
         data->originalStats = status;
-        data->path = directory;
+        data->path = strdup(directory);
 
         if (S_ISDIR(data->originalStats.st_mode)) {
             freeData(data);
