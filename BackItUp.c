@@ -25,6 +25,8 @@ typedef struct tNode {
 thr *head = NULL;
 thr *tail = NULL;
 
+int RESTORE_MODE = 0;
+
 void freeData(info *data) {
     free(data->file);
     free(data->path);
@@ -33,7 +35,6 @@ void freeData(info *data) {
 
 void *copyFile(void *arg) {
     info *data = (info *) arg;
-    printf("in thread: <%s>; <%s>\n", data->path, data->file);
 
     char filePath[SIZE], backupPath[SIZE]; // Create paths to the original and backup file
     sprintf(filePath, "%s/%s", data->path, data->file);
@@ -68,8 +69,14 @@ void *copyFile(void *arg) {
     }
 
     int rd;
+    int num_bytes_copied = 0;
     char buffer[SIZE];
-    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd); // Copy file
+    while ((rd = read(iFd, buffer, SIZE)) > 0) {
+        write(oFd, buffer, rd); // Copy file
+        num_bytes_copied += rd;
+    }
+
+    printf("Copied %d bytes from %s to %s.bak\n", num_bytes_copied, data->file, data->file);
 
     close(iFd);
     close(oFd);
@@ -79,7 +86,6 @@ void *copyFile(void *arg) {
 
 void newThread(info *data) {
     pthread_t thread;
-    printf("starting thread: <%s>; <%s>\n", data->path, data->file);
     if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) { // Create new thread
         freeData(data);
         return;
@@ -137,7 +143,13 @@ void enterDir(char *directory) {
     closedir(dir);
 }
 
-void main() {
+void main(int argc, char *argv[]) {
+
+    if (argc > 1) {
+        if (!strcmp(argv[1], "-r")) RESTORE_MODE = 1;
+        exit(0);
+    }
+
     enterDir(".");
     joinThreads();
     exit(0);
