@@ -35,17 +35,24 @@ void *copyFile(void *arg) {
     info *data = (info *) arg;
     printf("in thread: <%s>; <%s>\n", data->path, data->file);
 
-    char filePath[SIZE], backupPath[SIZE];
+    char filePath[SIZE], backupPath[SIZE]; // Create paths to the original and backup file
     sprintf(filePath, "%s/%s", data->path, data->file);
     sprintf(backupPath, "%s/.backup/%s.bak", data->path, data->file);
 
+    // RESTORE: For the above section I recommend switching the paths
+    // So we read from the .backup/file and write to the original file
+
     if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->file);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->file);
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->file); // Determine course of action and output message
     else {
         printf("%s is up to date\n", data->file);
         freeData(data);
         pthread_exit(NULL);
     }
+
+    // RESTORE: For the above section I recommend a simple if - else
+    // If (Restore) Compare appropriate values to determine if the original file must be overwritten by the .backup/file
+    // Else Do what is already present
 
     int iFd = open(filePath, O_RDONLY);
     if (iFd == -1) {
@@ -62,7 +69,7 @@ void *copyFile(void *arg) {
 
     int rd;
     char buffer[SIZE];
-    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd);
+    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd); // Copy file
 
     close(iFd);
     close(oFd);
@@ -73,7 +80,7 @@ void *copyFile(void *arg) {
 void newThread(info *data) {
     pthread_t thread;
     printf("starting thread: <%s>; <%s>\n", data->path, data->file);
-    if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) {
+    if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) { // Create new thread
         freeData(data);
         return;
     }
@@ -82,14 +89,14 @@ void newThread(info *data) {
     node->thread = thread;
     node->next = NULL;
 
-    if (head == NULL) head = node;
+    if (head == NULL) head = node; // Append thread to linked list
     if (tail != NULL) tail->next = node;
     tail = node;
 }
 
 void joinThreads() {
     thr *temp = head;
-    while (head != NULL) {
+    while (head != NULL) { // Clean up thread resources in the linked list
         head = head->next;
         pthread_join(temp->thread, NULL);
         free(temp);
@@ -102,16 +109,16 @@ void enterDir(char *directory) {
     if (dir == NULL) return;
 
     char pathToBackup[SIZE];
-    sprintf(pathToBackup, "%s/.backup/", directory);
+    sprintf(pathToBackup, "%s/.backup/", directory); // Make .backup/ directory
     mkdir(pathToBackup, 0755);
 
     struct dirent *file;
-    while ((file = readdir(dir)) != NULL) {
-        if (file->d_name[0] == '.') continue;
+    while ((file = readdir(dir)) != NULL) { // For each item in directory
+        if (file->d_name[0] == '.') continue; // Skip hidden
 
         struct stat status;
         char pathToFile[SIZE];
-        sprintf(pathToFile, "%s/%s", directory, file->d_name);
+        sprintf(pathToFile, "%s/%s", directory, file->d_name); // Construct path to the item
         if (stat(pathToFile, &status) == -1) continue;
 
         info *data = (info *) malloc(sizeof(info));
@@ -119,11 +126,11 @@ void enterDir(char *directory) {
         data->originalStats = status;
         data->path = strdup(directory);
 
-        if (S_ISDIR(data->originalStats.st_mode)) {
+        if (S_ISDIR(data->originalStats.st_mode)) { // If directory
             freeData(data);
-            enterDir(pathToFile);
+            enterDir(pathToFile); // Recursive call
         }
-        else if (S_ISREG(data->originalStats.st_mode)) newThread(data);
+        else if (S_ISREG(data->originalStats.st_mode)) newThread(data); // If regular file make a new thread
         else freeData(data);
     }
 
