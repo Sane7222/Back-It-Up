@@ -74,18 +74,21 @@ int overwrite(char *source, char *destination) {
 void *restoreFile(void *arg) {
     Info *data = (Info *) arg;
 
+    // get the original filename (without .bak)
     char *originalFilename = strdup(data->filename);
-    originalFilename[strlen(data->filename) - 4] = '\0';  // remove '.bak' from filename to get original
+    originalFilename[strlen(data->filename) - 4] = '\0';
 
+    // get the full filepaths for the backup and original files.
     char filePath[SIZE], backupPath[SIZE];
     sprintf(filePath, "%s/%s", data->originalDir, originalFilename);
     sprintf(backupPath, "%s/%s", data->backupDir, data->filename);
 
+    // figure out whether to restore or not...
     if (stat(filePath, &data->originalStats) == -1 || data->backupStats.st_mtime > data->originalStats.st_mtime) {
         printf("[thread %d] Restoring %s\n", data->thread_num ,originalFilename);
     } else {
+        // no restore needed..
         printf("[thread %d] %s is up to date\n", data->thread_num, originalFilename);
-
         freeData(data);
         free(originalFilename);
         pthread_exit(NULL);
@@ -159,11 +162,13 @@ void newThread(Info *data) {
 
     }
 
+    // create a linked list node and append the thread to the list.
+    // this list of threads will be joined at the end of the program.
     thr *node = (thr *) malloc(sizeof(thr));
     node->thread = thread;
     node->next = NULL;
 
-    if (head == NULL) head = node; // Append thread to linked list
+    if (head == NULL) head = node;
     if (tail != NULL) tail->next = node;
     tail = node;
 }
