@@ -83,12 +83,12 @@ void *restoreFile(void *arg) {
     sprintf(filePath, "%s/%s", data->originalDir, originalFilename);
     sprintf(backupPath, "%s/%s", data->backupDir, data->filename);
 
+    printf("[thread %d] Restoring %s\n", data->thread_num ,originalFilename);
+
     // figure out whether to restore or not...
-    if (stat(filePath, &data->originalStats) == -1 || data->backupStats.st_mtime > data->originalStats.st_mtime) {
-        printf("[thread %d] Restoring %s\n", data->thread_num ,originalFilename);
-    } else {
+    if (stat(filePath, &data->originalStats) != -1 && data->backupStats.st_mtime <= data->originalStats.st_mtime) {
         // no restore needed..
-        printf("[thread %d] %s is up to date\n", data->thread_num, originalFilename);
+        printf("[thread %d] %s is already the most current version\n", data->thread_num, originalFilename);
         freeData(data);
         free(originalFilename);
         pthread_exit(NULL);
@@ -98,11 +98,11 @@ void *restoreFile(void *arg) {
     int num_bytes_copied = overwrite(backupPath, filePath);
     if (num_bytes_copied > -1) {
         printf("[thread %d] Copied %d bytes from %s to %s\n", data->thread_num, num_bytes_copied, data->filename, originalFilename);
+
         pthread_mutex_lock(&total_mtx);
         TOTAL_BYTES_COPIED += num_bytes_copied;
         TOTAL_FILES_COPIED++;
         pthread_mutex_unlock(&total_mtx);
-
     }
 
     freeData(data);
@@ -119,10 +119,12 @@ void *backupFile(void *arg) {
     sprintf(filePath, "%s/%s", data->originalDir, data->filename);
     sprintf(backupPath, "%s/%s.bak", data->backupDir, data->filename);
 
-    if (stat(backupPath, &data->backupStats) == -1) printf("[thread %d] Backing up %s\n", data->thread_num, data->filename);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s\n", data->thread_num, data->filename);
+    printf("[thread %d] Backing up %s\n", data->thread_num, data->filename);
+
+    if (stat(backupPath, &data->backupStats) == -1) ; 
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s.bak\n", data->thread_num, data->filename);
     else {
-        printf("[thread %d] %s is up to date\n", data->thread_num, data->filename);
+        printf("[thread %d] %s does not need backing up\n", data->thread_num, data->filename);
         freeData(data);
         pthread_exit(NULL);
     }
@@ -131,12 +133,12 @@ void *backupFile(void *arg) {
     int num_bytes_copied = overwrite(filePath, backupPath);
     if (num_bytes_copied > -1) {
         printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->filename, data->filename);
+
         pthread_mutex_lock(&total_mtx);
         TOTAL_BYTES_COPIED += num_bytes_copied;
         TOTAL_FILES_COPIED++;
         pthread_mutex_unlock(&total_mtx);
     }
-
 
     freeData(data);
     pthread_exit(NULL);
@@ -201,28 +203,26 @@ void backup(char *directory) {
     while ((file = readdir(dir)) != NULL) { // For each item in directory
         if (file->d_name[0] == '.') continue; // Skip hidden
 
-        // gather file info for potential backup
+        // get the file stat
         struct stat status;
         char pathToFile[SIZE];
         sprintf(pathToFile, "%s/%s", directory, file->d_name); // Construct path to the item
         if (stat(pathToFile, &status) == -1) continue;
 
-        Info *data = (Info *) malloc(sizeof(Info));
-        data->filename = strdup(file->d_name);
-        data->originalDir = strdup(directory);
-        data->backupDir = strdup(pathToBackup);
-        data->originalStats = status;
+        if (S_ISDIR(status.st_mode)) backup(pathToFile); // is a directory, not a file. recurse into this file for backup
+        
+        if (S_ISREG(status.st_mode)) {
+            // If regular file, prep for possible backup in new thread;
 
-        if (S_ISDIR(data->originalStats.st_mode)) {
-            // is a directory, not a file. recurse into this file for backup
-            freeData(data);
-            backup(pathToFile);
-        }
-        else if (S_ISREG(data->originalStats.st_mode)) newThread(data); // If regular file make a new thread
-        else freeData(data);
+            Info *data = (Info *) malloc(sizeof(Info));
+            data->filename = strdup(file->d_name);
+            data->originalDir = strdup(directory);
+            data->backupDir = strdup(pathToBackup);
+            data->originalStats = status;
+            newThread(data);
+        } 
     }
 
-    // done!
     closedir(dir);
 }
 
@@ -242,20 +242,21 @@ void restore(char *directory) {
             if (backupFile->d_name[0] == '.') continue;
             if (strlen(backupFile->d_name) < 5) continue; // handle invalid file lengths (need a .bak ending)
 
+            // get the backup stat
             struct stat backupStats;
             char backupFilePath[SIZE];
             sprintf(backupFilePath, "%s/.backup/%s", directory, backupFile->d_name);
             if (stat(backupFilePath, &backupStats) == -1) continue;
 
-            Info *data = (Info *) malloc(sizeof(Info));
-            data->filename = strdup(backupFile->d_name);
-            data->originalDir = strdup(directory);
-            data->backupDir = strdup(pathToBackupDir);
-            data->backupStats = backupStats;
-
-            // handle odd case that this is a directory
-            if (S_ISREG(data->backupStats.st_mode)) newThread(data);
-            else freeData(data);
+            if (S_ISREG(backupStats.st_mode)) {
+                // if regular file, prep for possible restore in new thread
+                Info *data = (Info *) malloc(sizeof(Info));
+                data->filename = strdup(backupFile->d_name);
+                data->originalDir = strdup(directory);
+                data->backupDir = strdup(pathToBackupDir);
+                data->backupStats = backupStats;
+                newThread(data);
+            }
         }
 
         // done!
@@ -270,16 +271,14 @@ void restore(char *directory) {
     while ((file = readdir(dir)) != NULL) {
         if (file->d_name[0] == '.') continue;
 
+        // get the file stat
         struct stat status;
         char pathToFile[SIZE];
         sprintf(pathToFile, "%s/%s", directory, file->d_name);
         if (stat(pathToFile, &status) == -1) continue;
 
-        if(S_ISDIR(status.st_mode)) {
-            restore(pathToFile);
-        }
+        if(S_ISDIR(status.st_mode)) restore(pathToFile);
     }
-
     closedir(dir);
 }
 
@@ -296,6 +295,5 @@ void main(int argc, char *argv[]) {
 
     joinThreads();
     printf("Successfully copied %d files (%d bytes)\n", TOTAL_FILES_COPIED, TOTAL_BYTES_COPIED);
-
     exit(0);
 }
