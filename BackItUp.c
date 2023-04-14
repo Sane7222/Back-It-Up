@@ -10,16 +10,10 @@
 
 #define SIZE 1024
 
-typedef struct dataNode {
-    char *file;
-    char *path;
-    struct stat originalStats;
-    struct stat backupStats;
-} info;
-
-typedef struct copyData {
-    char *original, *destination;
-} CopyData;
+typedef struct info {
+    char *filename, *originalDir, *backupDir;
+    struct stat originalStats, backupStats;
+} Info;
 
 typedef struct tNode {
     pthread_t thread;
@@ -29,29 +23,74 @@ typedef struct tNode {
 thr *head = NULL;
 thr *tail = NULL;
 
-void freeData(info *data) {
-    free(data->file);
-    free(data->path);
+int TOTAL_THREADS = 0;
+int TOTAL_FILES_COPIED = 0;
+int TOTAL_BYTES_COPIED = 0;
+int RESTORE_MODE = 0;
+
+void freeData(Info *data) {
+    free(data->filename);
+    free(data->originalDir);
+    free(data->backupDir);
     free(data);
 }
 
-void freeCopyData(CopyData *cData) {
-    free(cData->destination);
-    free(cData->original);
-    free(cData);
-}
+void *restoreFile(void *arg) {
+    Info *data = (Info *) arg;
 
-void *copyFile(void *arg) {
-    info *data = (info *) arg;
+    char *originalFilename = strdup(data->filename);
+    originalFilename[strlen(data->filename) - 4] = '\0';  // remove '.bak' from filename
 
     char filePath[SIZE], backupPath[SIZE];
-    sprintf(filePath, "%s/%s", data->path, data->file);
-    sprintf(backupPath, "%s/.backup/%s.bak", data->path, data->file);
+    sprintf(filePath, "%s/%s", data->originalDir, originalFilename);
+    sprintf(backupPath, "%s/%s", data->backupDir, data->filename);
 
-    if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->file);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->file);
+    if (stat(filePath, &data->originalStats) == -1 || data->backupStats.st_mtime > data->originalStats.st_mtime) {
+        printf("Restoring %s\n", originalFilename);
+    } else {
+        printf("%s is up to date\n", originalFilename);
+        freeData(data);
+        free(originalFilename);
+        pthread_exit(NULL);
+    }
+
+    int iFd = open(backupPath, O_RDONLY);
+    if (iFd == -1) {
+        freeData(data);
+        free(originalFilename);
+        pthread_exit(NULL);
+    }
+
+    int oFd = open(filePath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (oFd == -1) {
+        close(iFd);
+        freeData(data);
+        free(originalFilename);
+        pthread_exit(NULL);
+    }
+
+    int rd;
+    char buffer[SIZE];
+    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd);
+
+    close(iFd);
+    close(oFd);
+    freeData(data);
+    free(originalFilename);
+    pthread_exit(NULL);
+}
+
+void *backupFile(void *arg) {
+    Info *data = (Info *) arg;
+
+    char filePath[SIZE], backupPath[SIZE];
+    sprintf(filePath, "%s/%s", data->originalDir, data->filename);
+    sprintf(backupPath, "%s/%s.bak", data->backupDir, data->filename);
+
+    if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->filename);
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->filename);
     else {
-        printf("%s is up to date\n", data->file);
+        printf("%s is up to date\n", data->filename);
         freeData(data);
         pthread_exit(NULL);
     }
@@ -79,12 +118,19 @@ void *copyFile(void *arg) {
     pthread_exit(NULL);
 }
 
-void newThread(info *data) {
+void newThread(Info *data) {
     pthread_t thread;
-    printf("starting thread: <%s>; <%s>\n", data->path, data->file);
-    if (pthread_create(&thread, NULL, &copyFile, (void *) data) != 0) {
-        freeData(data);
-        return;
+
+    if (RESTORE_MODE) {
+        if (pthread_create(&thread, NULL, &restoreFile, (void *) data) != 0) {
+            freeData(data);
+            return;
+        }
+    } else {
+        if (pthread_create(&thread, NULL, &backupFile, (void *) data) != 0) {
+            freeData(data);
+            return;
+        }
     }
 
     thr *node = (thr *) malloc(sizeof(thr));
@@ -106,7 +152,7 @@ void joinThreads() {
     }
 }
 
-void enterDir(char *directory) {
+void backup(char *directory) {
     DIR *dir = opendir(directory);
     if (dir == NULL) return;
 
@@ -123,14 +169,15 @@ void enterDir(char *directory) {
         sprintf(pathToFile, "%s/%s", directory, file->d_name);
         if (stat(pathToFile, &status) == -1) continue;
 
-        info *data = (info *) malloc(sizeof(info));
-        data->file = strdup(file->d_name);
+        Info *data = (Info *) malloc(sizeof(Info));
+        data->filename = strdup(file->d_name);
+        data->originalDir = strdup(directory);
+        data->backupDir = strdup(pathToBackup);
         data->originalStats = status;
-        data->path = strdup(directory);
 
         if (S_ISDIR(data->originalStats.st_mode)) {
             freeData(data);
-            enterDir(pathToFile);
+            backup(pathToFile);
         }
         else if (S_ISREG(data->originalStats.st_mode)) newThread(data);
         else freeData(data);
@@ -139,99 +186,42 @@ void enterDir(char *directory) {
     closedir(dir);
 }
 
-void *overwrite(void *data) {
-    CopyData *cData = (CopyData *) data;
-    char *originalFilePath = cData->original;
-    char *destinationFilePath = cData->destination;
-
-    int oFd, dFd;
-    oFd = open(originalFilePath, O_RDONLY);
-    if (oFd == -1) {
-        printf("Error opening original file path: %s\n", originalFilePath);
-        return NULL;
-    }
-
-    dFd = open(destinationFilePath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (dFd == -1) {
-        printf("Error opening destination file path: %s\n", destinationFilePath);
-        return NULL;
-    }
-
-    int rd;
-    char buffer[SIZE];
-    while ((rd = read(oFd, buffer, SIZE)) > 0) write(dFd, buffer, rd);
-
-    close(oFd);
-    close(dFd);
-
-    freeCopyData(cData);
-}
-
-void overwriterThread(CopyData *cData) {
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, &overwrite, (void *) cData) != 0) {
-        freeCopyData(cData);
-        return;
-    }
-
-    thr *node = (thr *) malloc(sizeof(thr));
-    node->thread = thread;
-    node->next = NULL;
-
-    if (head == NULL) head = node;
-    if (tail != NULL) tail->next = node;
-    tail = node;
-}
-
 void restore(char *directory) {
     // try to open the backup
-    char pathToBackup[SIZE];
-    sprintf(pathToBackup, "%s/.backup", directory);
-    printf("Attempting restore from <%s>\n", pathToBackup);
+    char pathToBackupDir[SIZE];
+    sprintf(pathToBackupDir, "%s/.backup", directory);
 
-    DIR *backupDir = opendir(pathToBackup);
-    if (backupDir == NULL) {
-        printf("Unable to open %s\n", pathToBackup);
-    }
+    DIR *backupDir = opendir(pathToBackupDir);
+    if (backupDir != NULL) {
+        // traverse files in backup
+        struct dirent *backupFile;
+        while((backupFile = readdir(backupDir)) != NULL) {
+            if (backupFile->d_name[0] == '.') continue;
+            if (strlen(backupFile->d_name) < 5) continue; // handle invalid file lengths (need a .bak ending)
 
-    // traverse files in backup
-    struct dirent *backupFile;
-    while((backupFile = readdir(backupDir)) != NULL) {
-        if (backupFile->d_name[0] == '.') continue;
-        if (strlen(backupFile->d_name) < 5) continue; // handle invalid file lengths
-        
-        char backupFilePath[SIZE];
-        sprintf(backupFilePath, "%s/.backup/%s", directory, backupFile->d_name);
+            struct stat backupStats;
+            char backupFilePath[SIZE];
+            sprintf(backupFilePath, "%s/.backup/%s", directory, backupFile->d_name);
+            if (stat(backupFilePath, &backupStats) == -1) continue;
 
-        char originalFilePath[SIZE];
-        sprintf(originalFilePath, "%s/%s", directory, backupFile->d_name);
-        originalFilePath[strlen(originalFilePath) - 4] = '\0';  // remove '.bak' from path
+            char filename[SIZE];
+            sprintf(filename, "%s/%s", directory, backupFile->d_name);
+            filename[strlen(backupFile->d_name) - 4] = '\0';  // remove '.bak' from path
 
-        CopyData *cData = malloc(sizeof(CopyData));
-        cData->original = strdup(backupFilePath);
-        cData->destination = strdup(originalFilePath);
+            Info *data = (Info *) malloc(sizeof(Info));
+            data->filename = strdup(backupFile->d_name);
+            data->originalDir = strdup(directory);
+            data->backupDir = strdup(pathToBackupDir);
+            data->backupStats = backupStats;
 
-        // compare backup to the original, copy over if needed
-        struct stat backupFileStat;
-        if (stat(backupFilePath, &backupFileStat) == -1) continue;
-
-        struct stat originalFileStat;
-        if (stat(originalFilePath, &originalFileStat) == -1) {
-            overwriterThread(cData);
-            continue;
+            // handle odd case that this is a directory
+            if (S_ISREG(data->backupStats.st_mode)) newThread(data);
+            else freeData(data);
         }
 
-        if (backupFileStat.st_mtime > originalFileStat.st_mtime) {
-            overwriterThread(cData);
-            continue;
-        }
-
-        // no overwritting needed. free copy data
-        freeCopyData(cData);
+        closedir(backupDir);
     }
 
-    closedir(backupDir);
-    
     // continue traversing file tree
     DIR *dir = opendir(directory);
     if (dir == NULL) return;
@@ -255,10 +245,9 @@ void restore(char *directory) {
 
 void main(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Backing up...\n");
-        enterDir(".");
+        backup(".");
     } else if (!strcmp(argv[1], "-r")) {
-        printf("Restoring...\n");
+        RESTORE_MODE = 1;
         restore(".");
     } else {
         printf("Invalid arguments...\n");
