@@ -8,7 +8,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 
-#define SIZE 1024
+#define SIZE 2048
 
 typedef struct info {
     char *filename, *originalDir, *backupDir;
@@ -21,15 +21,19 @@ typedef struct tNode {
     struct tNode *next;
 } thr;
 
+// Thread linked list:
 thr *head = NULL;
 thr *tail = NULL;
 
+// Thread + copy global vars:
 pthread_mutex_t total_mtx = PTHREAD_MUTEX_INITIALIZER;
 int TOTAL_THREADS = 0;
 int TOTAL_FILES_COPIED = 0;
 int TOTAL_BYTES_COPIED = 0;
 int RESTORE_MODE = 0;
 
+
+// freeData frees a malloc'd Info struct.
 void freeData(Info *data) {
     free(data->filename);
     free(data->originalDir);
@@ -37,6 +41,10 @@ void freeData(Info *data) {
     free(data);
 }
 
+// overwrite is a generic function that completely
+// overwrites the destination file with the source file.
+// it returns the number of bytes copied if succesful, and -1
+// if unsuccesful.
 int overwrite(char *source, char *destination) {
     int iFd = open(source, O_RDONLY);
     if (iFd == -1) return -1;
@@ -61,11 +69,13 @@ int overwrite(char *source, char *destination) {
     return num_bytes_copied;
 }
 
+// restoreFile is responsible for checking if a given file
+// should be restored or not, and performing the restore if applicable.
 void *restoreFile(void *arg) {
     Info *data = (Info *) arg;
 
     char *originalFilename = strdup(data->filename);
-    originalFilename[strlen(data->filename) - 4] = '\0';  // remove '.bak' from filename
+    originalFilename[strlen(data->filename) - 4] = '\0';  // remove '.bak' from filename to get original
 
     char filePath[SIZE], backupPath[SIZE];
     sprintf(filePath, "%s/%s", data->originalDir, originalFilename);
@@ -80,6 +90,7 @@ void *restoreFile(void *arg) {
         pthread_exit(NULL);
     }
 
+    // perform the restore, and update the global vars...
     int num_bytes_copied = overwrite(backupPath, filePath);
     if (num_bytes_copied > -1) {
         printf("[thread %d] Copied %d bytes from %s to %s\n", data->thread_num, num_bytes_copied, data->filename, originalFilename);
@@ -94,6 +105,8 @@ void *restoreFile(void *arg) {
     pthread_exit(NULL);
 }
 
+// backupFile is responsible for checking if a given file should be backed up
+// or not, and performs the backup if applicable.
 void *backupFile(void *arg) {
     Info *data = (Info *) arg;
 
@@ -109,6 +122,7 @@ void *backupFile(void *arg) {
         pthread_exit(NULL);
     }
 
+    // perform the backup and update global vars...
     int num_bytes_copied = overwrite(filePath, backupPath);
     if (num_bytes_copied > -1) {
         printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->filename, data->filename);
@@ -122,6 +136,9 @@ void *backupFile(void *arg) {
     pthread_exit(NULL);
 }
 
+// newThread creates a new thread, dispatches it to the correct
+// thread function (depending on RESTORE_MODE value), and adds the 
+// thread to a linked list for later joining.
 void newThread(Info *data) {
     pthread_t thread;
     data->thread_num = ++TOTAL_THREADS;
@@ -147,6 +164,8 @@ void newThread(Info *data) {
     tail = node;
 }
 
+// joinThreads is self explanatory. It allows the main
+// program to join on all threads created by newThread()
 void joinThreads() {
     thr *temp = head;
     while (head != NULL) {
@@ -157,18 +176,23 @@ void joinThreads() {
     }
 }
 
+// backup is responsible for recursing the file tree, creating .backup dirs
+// where needed, and locating files for potential backup.
 void backup(char *directory) {
     DIR *dir = opendir(directory);
     if (dir == NULL) return;
 
+    // create the .backup directory if it doesn't already exist
     char pathToBackup[SIZE];
     sprintf(pathToBackup, "%s/.backup/", directory);
     mkdir(pathToBackup, 0755);
 
+    // recurse through the directory entries
     struct dirent *file;
     while ((file = readdir(dir)) != NULL) {
         if (file->d_name[0] == '.') continue;
 
+        // gather file info for potential backup
         struct stat status;
         char pathToFile[SIZE];
         sprintf(pathToFile, "%s/%s", directory, file->d_name);
@@ -181,6 +205,7 @@ void backup(char *directory) {
         data->originalStats = status;
 
         if (S_ISDIR(data->originalStats.st_mode)) {
+            // is a directory, not a file. recurse into this file for backup
             freeData(data);
             backup(pathToFile);
         }
@@ -188,9 +213,13 @@ void backup(char *directory) {
         else freeData(data);
     }
 
+    // done!
     closedir(dir);
 }
 
+// restore is responsible for recursing through the file tree, locating
+// existing .backup directories, and locating .bak files within those
+// directories for possible restore.
 void restore(char *directory) {
     // try to open the backup
     char pathToBackupDir[SIZE];
@@ -209,10 +238,6 @@ void restore(char *directory) {
             sprintf(backupFilePath, "%s/.backup/%s", directory, backupFile->d_name);
             if (stat(backupFilePath, &backupStats) == -1) continue;
 
-            char filename[SIZE];
-            sprintf(filename, "%s/%s", directory, backupFile->d_name);
-            filename[strlen(backupFile->d_name) - 4] = '\0';  // remove '.bak' from path
-
             Info *data = (Info *) malloc(sizeof(Info));
             data->filename = strdup(backupFile->d_name);
             data->originalDir = strdup(directory);
@@ -224,6 +249,7 @@ void restore(char *directory) {
             else freeData(data);
         }
 
+        // done!
         closedir(backupDir);
     }
 
