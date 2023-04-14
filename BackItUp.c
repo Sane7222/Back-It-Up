@@ -13,6 +13,7 @@
 typedef struct info {
     char *filename, *originalDir, *backupDir;
     struct stat originalStats, backupStats;
+    int thread_num;
 } Info;
 
 typedef struct tNode {
@@ -23,6 +24,7 @@ typedef struct tNode {
 thr *head = NULL;
 thr *tail = NULL;
 
+pthread_mutex_t total_mtx = PTHREAD_MUTEX_INITIALIZER;
 int TOTAL_THREADS = 0;
 int TOTAL_FILES_COPIED = 0;
 int TOTAL_BYTES_COPIED = 0;
@@ -33,6 +35,30 @@ void freeData(Info *data) {
     free(data->originalDir);
     free(data->backupDir);
     free(data);
+}
+
+int overwrite(char *source, char *destination) {
+    int iFd = open(source, O_RDONLY);
+    if (iFd == -1) return -1;
+
+    int oFd = open(destination, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (oFd == -1) {
+        close(iFd);
+        return -1;
+    }
+
+    int rd;
+    int num_bytes_copied = 0;
+    char buffer[SIZE];
+    while ((rd = read(iFd, buffer, SIZE)) > 0) {
+        write(oFd, buffer, rd);
+        num_bytes_copied += rd;
+    }
+
+    close(iFd);
+    close(oFd);
+
+    return num_bytes_copied;
 }
 
 void *restoreFile(void *arg) {
@@ -46,35 +72,23 @@ void *restoreFile(void *arg) {
     sprintf(backupPath, "%s/%s", data->backupDir, data->filename);
 
     if (stat(filePath, &data->originalStats) == -1 || data->backupStats.st_mtime > data->originalStats.st_mtime) {
-        printf("Restoring %s\n", originalFilename);
+        printf("[thread %d] Restoring %s\n", data->thread_num ,originalFilename);
     } else {
-        printf("%s is up to date\n", originalFilename);
+        printf("[thread %d] %s is up to date\n", data->thread_num, originalFilename);
         freeData(data);
         free(originalFilename);
         pthread_exit(NULL);
     }
 
-    int iFd = open(backupPath, O_RDONLY);
-    if (iFd == -1) {
-        freeData(data);
-        free(originalFilename);
-        pthread_exit(NULL);
+    int num_bytes_copied = overwrite(backupPath, filePath);
+    if (num_bytes_copied > -1) {
+        printf("[thread %d] Copied %d bytes from %s to %s\n", data->thread_num, num_bytes_copied, data->filename, originalFilename);
+        pthread_mutex_lock(&total_mtx);
+        TOTAL_BYTES_COPIED += num_bytes_copied;
+        TOTAL_FILES_COPIED++;
+        pthread_mutex_unlock(&total_mtx);
     }
 
-    int oFd = open(filePath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (oFd == -1) {
-        close(iFd);
-        freeData(data);
-        free(originalFilename);
-        pthread_exit(NULL);
-    }
-
-    int rd;
-    char buffer[SIZE];
-    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd);
-
-    close(iFd);
-    close(oFd);
     freeData(data);
     free(originalFilename);
     pthread_exit(NULL);
@@ -87,39 +101,30 @@ void *backupFile(void *arg) {
     sprintf(filePath, "%s/%s", data->originalDir, data->filename);
     sprintf(backupPath, "%s/%s.bak", data->backupDir, data->filename);
 
-    if (stat(backupPath, &data->backupStats) == -1) printf("Backing up %s\n", data->filename);
-    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("WARNING: Overwriting %s\n", data->filename);
+    if (stat(backupPath, &data->backupStats) == -1) printf("[thread %d] Backing up %s\n", data->thread_num, data->filename);
+    else if (data->originalStats.st_mtime > data->backupStats.st_mtime) printf("[thread %d] WARNING: Overwriting %s\n", data->thread_num, data->filename);
     else {
-        printf("%s is up to date\n", data->filename);
+        printf("[thread %d] %s is up to date\n", data->thread_num, data->filename);
         freeData(data);
         pthread_exit(NULL);
     }
 
-    int iFd = open(filePath, O_RDONLY);
-    if (iFd == -1) {
-        freeData(data);
-        pthread_exit(NULL);
+    int num_bytes_copied = overwrite(filePath, backupPath);
+    if (num_bytes_copied > -1) {
+        printf("[thread %d] Copied %d bytes from %s to %s.bak\n", data->thread_num, num_bytes_copied, data->filename, data->filename);
+        pthread_mutex_lock(&total_mtx);
+        TOTAL_BYTES_COPIED += num_bytes_copied;
+        TOTAL_FILES_COPIED++;
+        pthread_mutex_unlock(&total_mtx);
     }
 
-    int oFd = open(backupPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (oFd == -1) {
-        close(iFd);
-        freeData(data);
-        pthread_exit(NULL);
-    }
-
-    int rd;
-    char buffer[SIZE];
-    while ((rd = read(iFd, buffer, SIZE)) > 0) write(oFd, buffer, rd);
-
-    close(iFd);
-    close(oFd);
     freeData(data);
     pthread_exit(NULL);
 }
 
 void newThread(Info *data) {
     pthread_t thread;
+    data->thread_num = ++TOTAL_THREADS;
 
     if (RESTORE_MODE) {
         if (pthread_create(&thread, NULL, &restoreFile, (void *) data) != 0) {
@@ -255,5 +260,7 @@ void main(int argc, char *argv[]) {
     }
 
     joinThreads();
+    printf("Successfully copied %d files (%d bytes)\n", TOTAL_FILES_COPIED, TOTAL_BYTES_COPIED);
+
     exit(0);
 }
