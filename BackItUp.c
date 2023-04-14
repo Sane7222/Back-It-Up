@@ -85,6 +85,7 @@ void *restoreFile(void *arg) {
         printf("[thread %d] Restoring %s\n", data->thread_num ,originalFilename);
     } else {
         printf("[thread %d] %s is up to date\n", data->thread_num, originalFilename);
+
         freeData(data);
         free(originalFilename);
         pthread_exit(NULL);
@@ -98,6 +99,7 @@ void *restoreFile(void *arg) {
         TOTAL_BYTES_COPIED += num_bytes_copied;
         TOTAL_FILES_COPIED++;
         pthread_mutex_unlock(&total_mtx);
+
     }
 
     freeData(data);
@@ -132,6 +134,7 @@ void *backupFile(void *arg) {
         pthread_mutex_unlock(&total_mtx);
     }
 
+
     freeData(data);
     pthread_exit(NULL);
 }
@@ -153,13 +156,14 @@ void newThread(Info *data) {
             freeData(data);
             return;
         }
+
     }
 
     thr *node = (thr *) malloc(sizeof(thr));
     node->thread = thread;
     node->next = NULL;
 
-    if (head == NULL) head = node;
+    if (head == NULL) head = node; // Append thread to linked list
     if (tail != NULL) tail->next = node;
     tail = node;
 }
@@ -168,7 +172,7 @@ void newThread(Info *data) {
 // program to join on all threads created by newThread()
 void joinThreads() {
     thr *temp = head;
-    while (head != NULL) {
+    while (head != NULL) { // Clean up thread resources in the linked list
         head = head->next;
         pthread_join(temp->thread, NULL);
         free(temp);
@@ -184,18 +188,18 @@ void backup(char *directory) {
 
     // create the .backup directory if it doesn't already exist
     char pathToBackup[SIZE];
-    sprintf(pathToBackup, "%s/.backup/", directory);
+    sprintf(pathToBackup, "%s/.backup/", directory); // Make .backup/ directory
     mkdir(pathToBackup, 0755);
 
     // recurse through the directory entries
     struct dirent *file;
-    while ((file = readdir(dir)) != NULL) {
-        if (file->d_name[0] == '.') continue;
+    while ((file = readdir(dir)) != NULL) { // For each item in directory
+        if (file->d_name[0] == '.') continue; // Skip hidden
 
         // gather file info for potential backup
         struct stat status;
         char pathToFile[SIZE];
-        sprintf(pathToFile, "%s/%s", directory, file->d_name);
+        sprintf(pathToFile, "%s/%s", directory, file->d_name); // Construct path to the item
         if (stat(pathToFile, &status) == -1) continue;
 
         Info *data = (Info *) malloc(sizeof(Info));
@@ -209,7 +213,7 @@ void backup(char *directory) {
             freeData(data);
             backup(pathToFile);
         }
-        else if (S_ISREG(data->originalStats.st_mode)) newThread(data);
+        else if (S_ISREG(data->originalStats.st_mode)) newThread(data); // If regular file make a new thread
         else freeData(data);
     }
 
